@@ -2,6 +2,12 @@
  * Docu-Chat embeddable widget.
  * Loaded from <origin>/widget.js. Reads config from window.__DOCU_CHAT_CFG__.
  * Fully standalone — no build step, no external deps beyond fetch.
+ *
+ * Features:
+ *   - Floating chat FAB + window, dark/light theme, brand color
+ *   - Smart mode: visitor asking for a human creates a ticket immediately
+ *   - Dedicated "Talk to human" button that skips the bot entirely
+ *   - Persistent anonymous visitor id in localStorage
  */
 (function () {
   "use strict";
@@ -33,7 +39,7 @@
     "#__dc__fab{width:56px;height:56px;border-radius:50%;background:" + brandColor + ";color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.2);transition:transform .15s}",
     "#__dc__fab:hover{transform:scale(1.05)}",
     "#__dc__fab svg{width:28px;height:28px;fill:#fff}",
-    "#__dc__window{position:absolute;bottom:68px;right:0;width:360px;height:520px;background:" + bg + ";color:" + fg + ";border:1px solid " + border + ";border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;opacity:0;transform:translateY(10px) scale(.98);pointer-events:none;transition:all .2s}",
+    "#__dc__window{position:absolute;bottom:68px;right:0;width:360px;height:560px;background:" + bg + ";color:" + fg + ";border:1px solid " + border + ";border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;opacity:0;transform:translateY(10px) scale(.98);pointer-events:none;transition:all .2s}",
     "#__dc__window.__open{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}",
     "#__dc__hdr{padding:14px 16px;border-bottom:1px solid " + border + ";font-weight:600;display:flex;align-items:center;justify-content:space-between}",
     "#__dc__close{background:none;border:none;color:" + muted + ";cursor:pointer;font-size:18px}",
@@ -51,6 +57,18 @@
     "#__dc__input:focus{border-color:" + brandColor + "}",
     "#__dc__send{background:" + brandColor + ";color:#fff;border:none;border-radius:8px;padding:0 14px;cursor:pointer;font-weight:600}",
     "#__dc__footer{text-align:center;font-size:11px;color:" + muted + ";padding:6px 0 2px}",
+    "#__dc__toolbar{padding:0 10px 8px;display:flex;gap:6px}",
+    "#__dc__human-btn{flex:1;background:transparent;color:" + brandColor + ";border:1px dashed " + brandColor + ";border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;text-align:center}",
+    "#__dc__human-btn:hover{background:" + brandColor + "15}",
+    "#__dc__human-form{position:absolute;inset:0;background:" + bg + ";z-index:10;display:flex;flex-direction:column;padding:16px;gap:10px}",
+    "#__dc__human-form h3{font-size:15px;font-weight:600;margin-bottom:4px}",
+    "#__dc__human-form input,#__dc__human-form textarea{width:100%;border:1px solid " + border + ";border-radius:8px;padding:8px 10px;background:transparent;color:" + fg + ";font-size:13px;font-family:inherit;outline:none}",
+    "#__dc__human-form textarea{resize:vertical;min-height:80px}",
+    "#__dc__human-form input:focus,#__dc__human-form textarea:focus{border-color:" + brandColor + "}",
+    "#__dc__human-form .__dc__row{display:flex;gap:8px}",
+    "#__dc__human-form button{padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none}",
+    "#__dc__human-form .__dc__submit{background:" + brandColor + ";color:#fff}",
+    "#__dc__human-form .__dc__cancel{background:transparent;color:" + muted + "}",
   ].join("");
 
   var styleEl = document.createElement("style");
@@ -69,6 +87,9 @@
     "  </div>",
     '  <div id="__dc__msgs">',
     '    <div class="__dc__msg __bot">' + welcome + "</div>",
+    "  </div>",
+    '  <div id="__dc__toolbar">',
+    '    <button id="__dc__human-btn" class="__dc__human-btn">👤 Talk to a human</button>',
     "  </div>",
     '  <div id="__dc__composer">',
     '    <input id="__dc__input" type="text" placeholder="' + placeholder + '" autocomplete="off" />',
@@ -89,6 +110,7 @@
   var msgs = root.querySelector("#__dc__msgs");
   var input = root.querySelector("#__dc__input");
   var send = root.querySelector("#__dc__send");
+  var humanBtn = root.querySelector("#__dc__human-btn");
 
   function toggle() {
     win.classList.toggle("__open");
@@ -136,7 +158,14 @@
       });
       var data = await res.json();
       typing.remove();
-      appendMsg(res.ok ? data.answer : "Error: " + (data.error || "unknown"), "bot");
+      if (res.ok) {
+        appendMsg(data.answer, "bot");
+        if (data.mode === "human") {
+          appendMsg("📎 Your request has been logged. The seller will reach out by email.", "bot");
+        }
+      } else {
+        appendMsg("Error: " + (data.error || "unknown"), "bot");
+      }
     } catch (e) {
       typing.remove();
       appendMsg("Network error — please try again.", "bot");
@@ -147,4 +176,70 @@
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter") ask();
   });
+
+  // --- "Talk to a human" overlay form ---
+  function showHumanForm() {
+    // prevent duplicates
+    if (root.querySelector("#__dc__human-form-overlay")) return;
+
+    var form = document.createElement("div");
+    form.id = "__dc__human-form-overlay";
+    form.className = "__dc__human-form";
+    form.innerHTML = [
+      "<h3>Talk to a real person</h3>",
+      '<p style="font-size:12px;color:' + muted + ';margin-bottom:6px;">Leave a message and the seller will get back to you.</p>',
+      '<input id="__dc__h-email" type="email" placeholder="Your email (optional)" />',
+      '<input id="__dc__h-subject" type="text" placeholder="Subject" />',
+      '<textarea id="__dc__h-msg" placeholder="What do you need help with?"></textarea>',
+      '<div class="__dc__row" style="justify-content:flex-end">',
+      '  <button class="__dc__cancel">Cancel</button>',
+      '  <button class="__dc__submit">Send request</button>',
+      "</div>",
+    ].join("");
+    win.appendChild(form);
+
+    form.querySelector(".__dc__cancel").addEventListener("click", function () {
+      form.remove();
+    });
+
+    form.querySelector(".__dc__submit").addEventListener("click", async function () {
+      var subject = form.querySelector("#__dc__h-subject").value.trim() || "Need help";
+      var message = form.querySelector("#__dc__h-msg").value.trim();
+      var contactEmail = form.querySelector("#__dc__h-email").value.trim();
+      if (!message) {
+        form.querySelector("#__dc__h-msg").focus();
+        return;
+      }
+      form.remove();
+      appendMsg("Talk to a human — submitting...", "user");
+      var typing = appendTyping();
+      try {
+        var res = await fetch(origin + "/api/tickets", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            visitorId: visitorId,
+            subject: subject,
+            message: message,
+            contactEmail: contactEmail || null,
+          }),
+        });
+        typing.remove();
+        if (res.ok) {
+          appendMsg(
+            "✅ Request sent! The seller has been notified and will reply as soon as possible." +
+              (contactEmail ? " (Reply to " + contactEmail + ")" : ""),
+            "bot"
+          );
+        } else {
+          appendMsg("Couldn't send — please try again or email the seller directly.", "bot");
+        }
+      } catch (e) {
+        typing.remove();
+        appendMsg("Network error — please try again later.", "bot");
+      }
+    });
+  }
+
+  humanBtn.addEventListener("click", showHumanForm);
 })();
